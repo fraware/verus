@@ -229,8 +229,15 @@ fn func_body_to_sst(
     let proof_body_stm = check_state.finalize_stm(ctx, &proof_body_stm)?;
     check_state.finalize();
 
+    // Research export: carry the termination payload when a recursive spec
+    // body is visible outside its owning bucket. The original home-bucket
+    // Verus verification remains the authority for termination validity;
+    // clients must re-establish their own termination obligations.
+    //
+    // This only reaches bodies allowed by func_axioms_to_sst(public_body).
+    // Closed spec functions remain subject to the original visibility gate.
     let termination_check =
-        if crate::recursion::fun_is_recursive(ctx, function) && verifying_owning_bucket {
+        if crate::recursion::fun_is_recursive(ctx, function) {
             let (mut termination_decls, termination_stm) = crate::recursion::check_termination_stm(
                 ctx,
                 diagnostics,
