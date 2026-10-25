@@ -204,7 +204,12 @@ fn func_body_to_sst(
     let FinalState { local_decls, statics: _ } = check_state.finalize()?;
 
     let is_recursive = crate::recursion::fun_is_recursive(ctx, function);
-    let termination_check = if is_recursive && verifying_owning_bucket {
+    // Research export: preserve the existing, Verus-produced termination
+    // witness for accessible recursive spec bodies in non-owning buckets.
+    // Verus still verifies termination in the owner's bucket; consumers
+    // must independently justify termination in their own proof backend.
+    // This leaves func_axioms_to_sst's public_body gate unchanged.
+    let termination_check = if is_recursive {
         let (mut termination_decls, termination_inits, termination_stm) =
             crate::recursion::check_termination_stm(
                 ctx,
