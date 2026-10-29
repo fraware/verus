@@ -474,3 +474,64 @@ test_verify_one_file! {
         }
     } => Err(err) => assert_one_fails(err)
 }
+
+// A private decreases_by proof is checked in the defining module.
+test_verify_one_file! {
+    #[test] cross_module_recursive_decreases_by verus_code! {
+        mod A {
+            use verus_builtin::nat;
+
+            pub open spec fn count(n: nat) -> nat
+                decreases n
+            {
+                decreases_by(check_count);
+                if n == 0 { 0 } else { 1 + count((n - 1) as nat) }
+            }
+
+            #[verifier(decreases_by)]
+            proof fn check_count(n: nat) {
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0);
+            }
+        }
+    } => Ok(())
+}
+
+// A recursive SCC spanning two modules must verify in both owning buckets.
+test_verify_one_file! {
+    #[test] cross_module_mutual_recursive_decrease verus_code! {
+        mod A {
+            use verus_builtin::nat;
+
+            pub open spec fn even(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { crate::B::odd((n - 1) as nat) }
+            }
+        }
+
+        mod B {
+            use verus_builtin::nat;
+
+            pub open spec fn odd(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { crate::A::even((n - 1) as nat) }
+            }
+        }
+
+        mod C {
+            use crate::A::even;
+
+            proof fn check() {
+                assert(even(0) == 0);
+            }
+        }
+    } => Ok(())
+}
