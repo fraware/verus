@@ -406,3 +406,65 @@ test_verify_one_file! {
         pub uninterp open fn bar();
     } => Err(err) => assert_vir_error_msg(err, "expected `fn`")
 }
+
+// Cross-module recursive-spec judgments for the pinned termination-export study.
+// These check Verus's verification results; SST serialization fidelity is separate.
+test_verify_one_file! {
+    #[test] cross_module_recursive_open_spec_visible verus_code! {
+        mod A {
+            pub open spec fn count(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { 1 + count((n - 1) as nat) }
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0);
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] cross_module_recursive_closed_spec_hidden verus_code! {
+        mod A {
+            pub closed spec fn count(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { 1 + count((n - 1) as nat) }
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0); // FAILS: sibling cannot unfold a closed spec.
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
+    #[test] cross_module_recursive_invalid_decrease_rejected verus_code! {
+        mod A {
+            pub open spec fn count(n: nat) -> nat
+                decreases n
+            {
+                count(n) // FAILS: recursion does not decrease.
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0);
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
