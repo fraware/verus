@@ -412,6 +412,8 @@ test_verify_one_file! {
 test_verify_one_file! {
     #[test] cross_module_recursive_open_spec_visible verus_code! {
         mod A {
+            use verus_builtin::nat;
+
             pub open spec fn count(n: nat) -> nat
                 decreases n
             {
@@ -432,6 +434,8 @@ test_verify_one_file! {
 test_verify_one_file! {
     #[test] cross_module_recursive_closed_spec_hidden verus_code! {
         mod A {
+            use verus_builtin::nat;
+
             pub closed spec fn count(n: nat) -> nat
                 decreases n
             {
@@ -452,6 +456,8 @@ test_verify_one_file! {
 test_verify_one_file! {
     #[test] cross_module_recursive_invalid_decrease_rejected verus_code! {
         mod A {
+            use verus_builtin::nat;
+
             pub open spec fn count(n: nat) -> nat
                 decreases n
             {
