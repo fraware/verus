@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - research/pinned-cross-module-termination-export
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - research/pinned-baseline-48600836
   workflow_dispatch:
 
 permissions:
