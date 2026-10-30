@@ -41,6 +41,26 @@ jobs:
         with:
           toolchain: "1.96.0"
       - uses: taiki-e/install-action@nextest
+      - name: Check exact targeted regression inventory
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          code = Path("source/rust_verify_test/tests/modules.rs").read_text()
+          names = (
+            "cross_module_recursive_open_spec_visible",
+            "cross_module_recursive_closed_spec_hidden",
+            "cross_module_recursive_invalid_decrease_rejected",
+            "cross_module_recursive_decreases_by",
+            "cross_module_mutual_recursive_decrease",
+          )
+          for name in names:
+              pattern = r"\#\[test\]\s+" + re.escape(name) + r"\s+verus_code!"
+              if len(re.findall(pattern, code)) != 1:
+                  raise SystemExit("missing or duplicate test registration: " + name)
+          print("TARGETED_VERUS_NATIVE_INVENTORY_PASS", len(names))
+          PY
       - name: Fetch pinned Z3
         working-directory: source
         run: |
