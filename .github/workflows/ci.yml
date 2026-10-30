@@ -118,7 +118,7 @@ jobs:
   # check if it builds and runs on macos, running the full test suite
   # (in release mode because it makes a huge difference)
   full-test:
-    runs-on: macos-14
+    runs-on: macos-15
 
     defaults:
       run:
@@ -228,7 +228,7 @@ jobs:
       matrix:
         features: [record-history, no-std, no-alloc, singular]
 
-    runs-on: macos-14
+    runs-on: macos-15
 
     defaults:
       run:
