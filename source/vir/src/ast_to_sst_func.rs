@@ -292,7 +292,12 @@ fn func_body_to_sst(
         None
     };
 
-    Ok(FuncSpecBodySst { decrease_when, termination_check, body_exp })
+    Ok(FuncSpecBodySst {
+        decrease_when,
+        termination_check,
+        verify_termination_in_this_bucket: verifying_owning_bucket,
+        body_exp,
+    })
 }
 
 fn rewrite_async_ens_vir(function: &Function, specs: &Vec<Expr>) -> Result<Vec<Expr>, VirErr> {
