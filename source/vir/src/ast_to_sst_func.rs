@@ -174,6 +174,7 @@ fn func_body_to_sst(
     } else {
         None
     };
+    let mut missing_decreases_by_proof_body = false;
     if let Some(fun) = &function.x.decrease_by {
         check_state.view_as_spec = false;
         if let Some(decrease_by_fun) = ctx.func_map.get(fun) {
@@ -191,6 +192,9 @@ fn func_body_to_sst(
             proof_body.push(decrease_by_fun_body);
         } else {
             assert!(!verifying_owning_bucket);
+            // The non-owning bucket has no proof body for this private helper.
+            // Do not export an incomplete termination witness as DecreasesBy.
+            missing_decreases_by_proof_body = true;
         }
     }
     let mut proof_body_stms: Vec<Stm> = Vec::new();
@@ -209,7 +213,9 @@ fn func_body_to_sst(
     // Verus still verifies termination in the owner's bucket; consumers
     // must independently justify termination in their own proof backend.
     // This leaves func_axioms_to_sst's public_body gate unchanged.
-    let termination_check = if is_recursive {
+    // An inaccessible decreases_by proof body cannot justify an exported
+    // termination check; the owning bucket still checks the complete proof.
+    let termination_check = if is_recursive && !missing_decreases_by_proof_body {
         let (mut termination_decls, termination_inits, termination_stm) =
             crate::recursion::check_termination_stm(
                 ctx,
