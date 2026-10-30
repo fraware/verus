@@ -91,6 +91,7 @@ jobs:
           log_root="${RUNNER_TEMP:?}/verus-cross-module-sst"
           mkdir -p "$log_root"
           printf 'head=%s\n' "$(git rev-parse HEAD)" > "$log_root/commit.txt"
+          failures=0
           for test in \
             cross_module_recursive_open_spec_visible \
             cross_module_recursive_closed_spec_hidden \
@@ -100,19 +101,28 @@ jobs:
             echo "CHECKING $test"
             log_dir="$log_root/$test"
             mkdir -p "$log_dir"
-            VERUS_EXTRA_ARGS="--log vir-sst --log-dir $log_dir" \
+            if VERUS_EXTRA_ARGS="--log vir-sst --log-dir $log_dir" \
               VERUS_Z3_PATH="$(pwd)/z3" vargo nextest run --release -p rust_verify_test \
-                -E "test($test)" --no-tests=fail
+                -E "test($test)" --no-tests=fail; then
+              echo "PASS $test"
+            else
+              echo "::error::Native regression failed: $test" >&2
+              failures=$((failures + 1))
+            fi
             find "$log_dir" -type f -name '*-sst.vir' -print | sort
             case "$test" in
               cross_module_recursive_open_spec_visible|cross_module_recursive_decreases_by|cross_module_mutual_recursive_decrease)
                 if ! find "$log_dir" -type f -name '*-sst.vir' -size +0c -print -quit | grep -q .; then
                   echo "::error::No nonempty SST log for $test" >&2
-                  exit 1
+                  failures=$((failures + 1))
                 fi
                 ;;
             esac
           done
+          if (( failures > 0 )); then
+            echo "::error::$failures regression checks failed" >&2
+            exit 1
+          fi
       - name: Archive SST evidence for inspection
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
