@@ -216,8 +216,8 @@ fn func_body_to_sst(
     // This leaves func_axioms_to_sst's public_body gate unchanged.
     // Only export implicit termination evidence outside the owning bucket.
     // Explicit decreases_by proofs remain owned and are never exported.
-    let termination_check =
-        if is_recursive && (verifying_owning_bucket || function.x.decrease_by.is_none()) {
+    let include_termination = verifying_owning_bucket || function.x.decrease_by.is_none();
+    let termination_check = if is_recursive && include_termination {
         let (mut termination_decls, termination_inits, termination_stm) =
             crate::recursion::check_termination_stm(
                 ctx,
