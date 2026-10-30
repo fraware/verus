@@ -25,3 +25,42 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p vir --lib
+
+  targeted-native-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - uses: taiki-e/install-action@nextest
+      - name: Fetch pinned Z3
+        working-directory: source
+        run: |
+          set -euo pipefail
+          ./tools/get-z3.sh
+          ./z3 --version
+      - name: Build Verus and verification-test harness
+        working-directory: source
+        run: |
+          set -euo pipefail
+          . ../tools/activate
+          vargo build --release
+      - name: Verify each cross-module termination regression
+        working-directory: source
+        run: |
+          set -euo pipefail
+          . ../tools/activate
+          for test in \
+            cross_module_recursive_open_spec_visible \
+            cross_module_recursive_closed_spec_hidden \
+            cross_module_recursive_invalid_decrease_rejected \
+            cross_module_recursive_decreases_by \
+            cross_module_mutual_recursive_decrease; do
+            echo "CHECKING $test"
+            VERUS_Z3_PATH="$(pwd)/z3" vargo nextest run --release -p rust_verify_test \
+              -E "test($test)" --no-tests=fail
+          done
