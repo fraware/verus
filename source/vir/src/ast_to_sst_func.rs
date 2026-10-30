@@ -174,13 +174,18 @@ fn func_body_to_sst(
     } else {
         None
     };
-    let mut missing_decreases_by_proof_body = false;
     if let Some(fun) = &function.x.decrease_by {
         check_state.view_as_spec = false;
-        if let Some(decrease_by_fun_body) =
-            ctx.func_map.get(fun).and_then(|decrease_by_fun| decrease_by_fun.x.body.as_ref())
-        {
-            let decrease_by_fun_body = decrease_by_fun_body.clone();
+        // Only the owning bucket translates the explicit decreases_by proof.
+        // Non-owning buckets must not export a private helper body, even if
+        // the function map happens to contain one.
+        if verifying_owning_bucket {
+            let decrease_by_fun_body = ctx
+                .func_map
+                .get(fun)
+                .and_then(|decrease_by_fun| decrease_by_fun.x.body.as_ref())
+                .expect("decreases_by proof body missing in owning bucket")
+                .clone();
             ast_visitor::expr_visitor_check(&decrease_by_fun_body, &mut |_scope_map, expr| {
                 match &expr.x {
                     ExprX::Return(_) => Err(error(
@@ -191,11 +196,6 @@ fn func_body_to_sst(
                 }
             })?;
             proof_body.push(decrease_by_fun_body);
-        } else {
-            assert!(!verifying_owning_bucket);
-            // The helper or its body is unavailable in this non-owning bucket.
-            // Do not export an incomplete termination witness as DecreasesBy.
-            missing_decreases_by_proof_body = true;
         }
     }
     let mut proof_body_stms: Vec<Stm> = Vec::new();
@@ -214,9 +214,10 @@ fn func_body_to_sst(
     // Verus still verifies termination in the owner's bucket; consumers
     // must independently justify termination in their own proof backend.
     // This leaves func_axioms_to_sst's public_body gate unchanged.
-    // An inaccessible decreases_by proof body cannot justify an exported
-    // termination check; the owning bucket still checks the complete proof.
-    let termination_check = if is_recursive && !missing_decreases_by_proof_body {
+    // Only export implicit termination evidence outside the owning bucket.
+    // Explicit decreases_by proofs remain owned and are never exported.
+    let termination_check =
+        if is_recursive && (verifying_owning_bucket || function.x.decrease_by.is_none()) {
         let (mut termination_decls, termination_inits, termination_stm) =
             crate::recursion::check_termination_stm(
                 ctx,
