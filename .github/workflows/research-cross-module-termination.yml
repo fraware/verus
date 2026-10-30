@@ -123,6 +123,53 @@ jobs:
             echo "::error::$failures regression checks failed" >&2
             exit 1
           fi
+      - name: Assert per-bucket SST termination contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "verus-cross-module-sst"
+          expected = {
+              "cross_module_recursive_open_spec_visible": {"A": (1, 0), "B": (1, 0)},
+              "cross_module_recursive_closed_spec_hidden": {"A": (1, 0), "B": (0, 0)},
+              "cross_module_recursive_invalid_decrease_rejected": {"A": (1, 0), "B": (1, 0)},
+              "cross_module_recursive_decreases_by": {"A": (0, 1), "B": (0, 0)},
+              "cross_module_mutual_recursive_decrease": {
+                  "A": (2, 0), "B": (2, 0), "C": (2, 0),
+              },
+          }
+          counts = {
+              f"{test}/{bucket}-sst.vir": values
+              for test, buckets in expected.items()
+              for bucket, values in buckets.items()
+          }
+          paths = {p.relative_to(root).as_posix(): p for p in root.glob("*/*-sst.vir")}
+          if paths.keys() != counts.keys():
+              raise SystemExit(
+                  f"SST inventory mismatch: missing={sorted(counts.keys()-paths.keys())} "
+                  f"extra={sorted(paths.keys()-counts.keys())}"
+              )
+          kinds = (
+              ":kind (PostConditionKind DecreasesImplicitLemma)",
+              ":kind (PostConditionKind DecreasesBy)",
+          )
+          for name, expected_counts in counts.items():
+              content = paths[name].read_text(encoding="utf-8")
+              observed = tuple(content.count(kind) for kind in kinds)
+              if observed != expected_counts:
+                  raise SystemExit(
+                      f"{name}: termination checks {observed}, expected {expected_counts}"
+                  )
+              if name == "cross_module_recursive_closed_spec_hidden/B-sst.vir":
+                  if "FuncSpecBodySst" in content:
+                      raise SystemExit("closed spec body exposed in non-owning bucket")
+              if name == "cross_module_recursive_decreases_by/B-sst.vir":
+                  if ":termination_check None" not in content:
+                      raise SystemExit("explicit decreases_by must be absent in importing bucket")
+          print("SST_TERMINATION_CONTRACT_PASS", len(counts))
+          PY
       - name: Archive SST evidence for inspection
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
