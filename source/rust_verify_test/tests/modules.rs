@@ -590,10 +590,6 @@ fn cross_module_recursive_sst_export_preserves_ownership() {
         let implicit = ":kind (PostConditionKind DecreasesImplicitLemma)";
         assert_eq!(sst.matches(implicit).count(), 1, "SST: {}", file.display());
         let owner_flag = format!(":verify_termination_in_this_bucket {owning}");
-        assert!(
-            sst.contains(&owner_flag),
-            "incorrect owner provenance in {}",
-            file.display()
-        );
+        assert!(sst.contains(&owner_flag), "incorrect owner provenance in {}", file.display());
     }
 }
