@@ -1,0 +1,64 @@
+name: Full upstream termination candidate verification
+
+on:
+  push:
+    branches:
+      - research/ci-upstream-submission-20261030
+
+permissions:
+  contents: read
+
+jobs:
+  complete-suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Confirm exact source candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "7892c9f91dc05266501ed904ef78e190c70302a4"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@nextest
+      - name: Install Z3 and cvc5
+        working-directory: source
+        run: |
+          set -euo pipefail
+          ./tools/get-z3.sh
+          ./tools/get-cvc5.sh
+          ./z3 --version
+          ./cvc5 --version
+      - name: Build release Verus and vstd
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo run --release --bin create-manifest -- --rolling --write-to-dir cargo-verus/toolchain-manifests
+          cargo build --release
+          cargo run --release --bin cargo-verus -- build --release --manifest-path vstd/Cargo.toml
+      - name: Verify AIR and native test partition
+        working-directory: source
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          cargo nextest run --release -p air --partition "hash:${SHARD}/2"
+          cargo nextest run --release -p rust_verify_test --partition "hash:${SHARD}/2"
+      - name: Verify cvc5 compatibility
+        if: matrix.shard == 1
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo run --release --bin rust_verify -- -V cvc5 ../examples/assorted_demo.rs
+          VERUS_EXTRA_ARGS="-V cvc5" cargo nextest run --release -p rust_verify_test \
+            --test mut_refs_slices_arrays -j 4
