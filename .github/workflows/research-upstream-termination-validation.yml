@@ -1,0 +1,143 @@
+name: Upstream termination export candidate validation
+
+on:
+  push:
+    branches:
+      - research/ci-upstream-cross-module-20261030
+
+permissions:
+  contents: read
+
+jobs:
+  vir-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Assert exact source candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:source/vir/src/ast_to_sst_func.rs)" = "9243ea9b01e9ff86ae44aa44b574804a54148ab1"
+          test "$(git rev-parse HEAD:source/vir/src/sst.rs)" = "60d20ae856b46576c3ab8238e5c9f096a2db3d65"
+          test "$(git rev-parse HEAD:source/vir/src/sst_visitor.rs)" = "6f71ccde65f700fcf3591ff434a40c2c9417bc7d"
+          test "$(git rev-parse HEAD:source/vir/src/poly.rs)" = "7beb0e5a82d699788545a625886669dd84a847ae"
+          test "$(git rev-parse HEAD:source/vir/src/sst_to_air_func.rs)" = "486448cc2fc218569c4d45d61a42270c35f97035"
+          test "$(git rev-parse HEAD:source/rust_verify_test/tests/modules.rs)" = "cf04c9aecac84e2cb7c2ac1365d19f95d0dad580"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: VIR unit tests
+        working-directory: source
+        run: cargo test -p vir --lib
+      - name: Check Rust formatting
+        working-directory: source
+        run: cargo fmt --all -- --check
+
+  native-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Assert exact source candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:source/vir/src/ast_to_sst_func.rs)" = "9243ea9b01e9ff86ae44aa44b574804a54148ab1"
+          test "$(git rev-parse HEAD:source/vir/src/sst.rs)" = "60d20ae856b46576c3ab8238e5c9f096a2db3d65"
+          test "$(git rev-parse HEAD:source/vir/src/sst_visitor.rs)" = "6f71ccde65f700fcf3591ff434a40c2c9417bc7d"
+          test "$(git rev-parse HEAD:source/vir/src/poly.rs)" = "7beb0e5a82d699788545a625886669dd84a847ae"
+          test "$(git rev-parse HEAD:source/vir/src/sst_to_air_func.rs)" = "486448cc2fc218569c4d45d61a42270c35f97035"
+          test "$(git rev-parse HEAD:source/rust_verify_test/tests/modules.rs)" = "cf04c9aecac84e2cb7c2ac1365d19f95d0dad580"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@nextest
+      - name: Get Z3
+        working-directory: source
+        run: |
+          set -euo pipefail
+          ./tools/get-z3.sh
+          ./z3 --version
+      - name: Compile upstream Verus
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo run --release --bin create-manifest -- --rolling --write-to-dir cargo-verus/toolchain-manifests
+          cargo build --release
+      - name: Five native tests and SST logs
+        working-directory: source
+        run: |
+          set -euo pipefail
+          root="$(pwd)/upstream-sst"
+          mkdir -p "$root"
+          printf 'tested_commit=%s\nsource_candidate=%s\n' "$(git rev-parse HEAD)" "210a017bd692da753e58eeef1b7e4a108e5e35fe" > "$root/commit.txt"
+          for test in \
+            cross_module_recursive_open_spec_visible \
+            cross_module_recursive_closed_spec_hidden \
+            cross_module_recursive_invalid_decrease_rejected \
+            cross_module_recursive_decreases_by \
+            cross_module_mutual_recursive_decrease; do
+            mkdir -p "$root/$test"
+            echo "CHECKING $test"
+            VERUS_EXTRA_ARGS="--log vir-sst --log-dir $root/$test" \
+              VERUS_Z3_PATH="$(pwd)/z3" \
+              cargo nextest run --release -p rust_verify_test -E "test($test)" --no-tests=fail
+            echo "PASS $test"
+          done
+      - name: Verify native SST export ownership regression
+        working-directory: source
+        run: |
+          set -euo pipefail
+          VERUS_Z3_PATH="$(pwd)/z3" cargo nextest run --release -p rust_verify_test \
+            -E "test(cross_module_recursive_sst_export_preserves_ownership)" --no-tests=fail
+      - name: Assert SST structure
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("source/upstream-sst")
+          expected = {
+              "cross_module_recursive_open_spec_visible": {"A": (1, 0), "B": (1, 0)},
+              "cross_module_recursive_closed_spec_hidden": {"A": (1, 0), "B": (0, 0)},
+              "cross_module_recursive_invalid_decrease_rejected": {"A": (1, 0), "B": (1, 0)},
+              "cross_module_recursive_decreases_by": {"A": (0, 1), "B": (0, 0)},
+              "cross_module_mutual_recursive_decrease": {
+                  "A": (2, 0), "B": (2, 0), "C": (2, 0),
+              },
+          }
+          counts = {
+              f"{test}/t%{bucket}-sst.vir": value
+              for test, buckets in expected.items()
+              for bucket, value in buckets.items()
+          }
+          paths = {p.relative_to(root).as_posix(): p for p in root.glob("*/*-sst.vir")}
+          if paths.keys() != counts.keys():
+              raise SystemExit(f"SST inventory differs: missing={sorted(counts.keys()-paths.keys())} extra={sorted(paths.keys()-counts.keys())}")
+          kinds = (
+              ":kind (PostConditionKind DecreasesImplicitLemma)",
+              ":kind (PostConditionKind DecreasesBy)",
+          )
+          for name, want in counts.items():
+              content = paths[name].read_text()
+              got = tuple(content.count(k) for k in kinds)
+              if got != want:
+                  raise SystemExit(f"{name}: {got} vs {want}")
+              if name == "cross_module_recursive_closed_spec_hidden/t%B-sst.vir" and "FuncSpecBodySst" in content:
+                  raise SystemExit("closed spec body exposed")
+              if name == "cross_module_recursive_decreases_by/t%B-sst.vir" and ":termination_check None" not in content:
+                  raise SystemExit("explicit decreases_by exported")
+          print("UPSTREAM_SST_CONTRACT_PASS", len(counts))
+          PY
+      - name: Archive SST logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: upstream-cross-module-sst-210a017
+          path: source/upstream-sst/
+          if-no-files-found: warn
+          retention-days: 7
