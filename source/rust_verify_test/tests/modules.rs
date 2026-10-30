@@ -535,3 +535,65 @@ test_verify_one_file! {
         }
     } => Ok(())
 }
+
+// Check the exported SST directly. Verification verdict tests alone pass on
+// unmodified Verus and do not establish the cross-bucket export contract.
+#[test]
+fn cross_module_recursive_sst_export_preserves_ownership() {
+    let temp = tempfile::tempdir().expect("temporary SST log directory");
+    let test_name = "cross_module_recursive_sst_export_preserves_ownership";
+    let log_dir = if let Some(root) = std::env::var_os("VERUS_TEST_LOG_DIR") {
+        let binary = std::env::current_exe()
+            .expect("test executable")
+            .file_name()
+            .expect("test binary name")
+            .to_string_lossy()
+            .into_owned();
+        let binary = match binary.rsplit_once('-') {
+            Some((stem, hash)) if hash.chars().all(|c| c.is_ascii_hexdigit()) => stem,
+            _ => binary.as_str(),
+        };
+        std::path::PathBuf::from(root).join(binary).join(test_name).join("log")
+    } else {
+        let dir = temp.path().join("log");
+        std::fs::create_dir(&dir).expect("create SST log directory");
+        THREAD_LOCAL_TEST_LOG_DIR.with(|slot| *slot.borrow_mut() = Some(dir.clone()));
+        dir
+    };
+
+    let source = verus_code! {
+        mod A {
+            use verus_builtin::{nat, SpecAdd, SpecSub};
+
+            pub open spec fn count(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { 1 + count((n - 1) as nat) }
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0);
+            }
+        }
+    };
+    let result = verify_one_file(test_name, source, &[]);
+    assert!(result.is_ok(), "native verification failed: {result:?}");
+
+    for (bucket, owning) in [("A", true), ("B", false)] {
+        let file = log_dir.join(format!("t%{bucket}-sst.vir"));
+        let sst = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("missing SST at {}: {e}", file.display()));
+        let implicit = ":kind (PostConditionKind DecreasesImplicitLemma)";
+        assert_eq!(sst.matches(implicit).count(), 1, "SST: {}", file.display());
+        let owner_flag = format!(":verify_termination_in_this_bucket {owning}");
+        assert!(
+            sst.contains(&owner_flag),
+            "incorrect owner provenance in {}",
+            file.display()
+        );
+    }
+}
