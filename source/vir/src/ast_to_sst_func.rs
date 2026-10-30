@@ -220,7 +220,9 @@ fn func_body_to_sst(
                 .func_map
                 .get(fun)
                 .and_then(|decrease_by_fun| decrease_by_fun.x.body.as_ref())
-                .expect("decreases_by proof body missing in owning bucket")
+                .ok_or_else(|| {
+                    error(&function.span, "decreases_by proof body missing in owning bucket")
+                })?
                 .clone();
             ast_visitor::expr_visitor_check(&decrease_by_fun_body, &mut |_scope_map, expr| {
                 match &expr.x {
