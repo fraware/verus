@@ -177,9 +177,10 @@ fn func_body_to_sst(
     let mut missing_decreases_by_proof_body = false;
     if let Some(fun) = &function.x.decrease_by {
         check_state.view_as_spec = false;
-        if let Some(decrease_by_fun) = ctx.func_map.get(fun) {
-            let decrease_by_fun_body =
-                decrease_by_fun.x.body.as_ref().expect("decreases_by has body").clone();
+        if let Some(decrease_by_fun_body) =
+            ctx.func_map.get(fun).and_then(|decrease_by_fun| decrease_by_fun.x.body.as_ref())
+        {
+            let decrease_by_fun_body = decrease_by_fun_body.clone();
             ast_visitor::expr_visitor_check(&decrease_by_fun_body, &mut |_scope_map, expr| {
                 match &expr.x {
                     ExprX::Return(_) => Err(error(
@@ -192,7 +193,7 @@ fn func_body_to_sst(
             proof_body.push(decrease_by_fun_body);
         } else {
             assert!(!verifying_owning_bucket);
-            // The non-owning bucket has no proof body for this private helper.
+            // The helper or its body is unavailable in this non-owning bucket.
             // Do not export an incomplete termination witness as DecreasesBy.
             missing_decreases_by_proof_body = true;
         }
