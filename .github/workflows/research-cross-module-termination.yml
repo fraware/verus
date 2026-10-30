@@ -1,0 +1,180 @@
+name: Experimental recursive decreases export
+
+on:
+  push:
+    branches:
+      - research/pinned-cross-module-termination-export
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - research/pinned-baseline-48600836
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vir-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Confirm exact candidate checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+      - name: Compile VIR and run its own tests
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo test -p vir --lib
+
+  targeted-native-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Confirm exact candidate checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - uses: taiki-e/install-action@nextest
+      - name: Check exact targeted regression inventory
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          code = Path("source/rust_verify_test/tests/modules.rs").read_text()
+          names = (
+            "cross_module_recursive_open_spec_visible",
+            "cross_module_recursive_closed_spec_hidden",
+            "cross_module_recursive_invalid_decrease_rejected",
+            "cross_module_recursive_decreases_by",
+            "cross_module_mutual_recursive_decrease",
+          )
+          for name in names:
+              pattern = r"\#\[test\]\s+" + re.escape(name) + r"\s+verus_code!"
+              if len(re.findall(pattern, code)) != 1:
+                  raise SystemExit("missing or duplicate test registration: " + name)
+          print("TARGETED_VERUS_NATIVE_INVENTORY_PASS", len(names))
+          PY
+      - name: Fetch pinned Z3
+        working-directory: source
+        run: |
+          set -euo pipefail
+          ./tools/get-z3.sh
+          ./z3 --version
+      - name: Build Verus and verification-test harness
+        working-directory: source
+        run: |
+          set -euo pipefail
+          . ../tools/activate
+          vargo build --release
+      - name: Verify regressions and capture per-bucket SST
+        working-directory: source
+        run: |
+          set -euo pipefail
+          . ../tools/activate
+          log_root="${RUNNER_TEMP:?}/verus-cross-module-sst"
+          mkdir -p "$log_root"
+          printf 'head=%s\n' "$(git rev-parse HEAD)" > "$log_root/commit.txt"
+          failures=0
+          for test in \
+            cross_module_recursive_open_spec_visible \
+            cross_module_recursive_closed_spec_hidden \
+            cross_module_recursive_invalid_decrease_rejected \
+            cross_module_recursive_decreases_by \
+            cross_module_mutual_recursive_decrease; do
+            echo "CHECKING $test"
+            log_dir="$log_root/$test"
+            mkdir -p "$log_dir"
+            if VERUS_EXTRA_ARGS="--log vir-sst --log-dir $log_dir" \
+              VERUS_Z3_PATH="$(pwd)/z3" vargo nextest run --release -p rust_verify_test \
+                -E "test($test)" --no-tests=fail; then
+              echo "PASS $test"
+            else
+              echo "::error::Native regression failed: $test" >&2
+              failures=$((failures + 1))
+            fi
+            find "$log_dir" -type f -name '*-sst.vir' -print | sort
+            case "$test" in
+              cross_module_recursive_open_spec_visible|cross_module_recursive_decreases_by|cross_module_mutual_recursive_decrease)
+                if ! find "$log_dir" -type f -name '*-sst.vir' -size +0c -print -quit | grep -q .; then
+                  echo "::error::No nonempty SST log for $test" >&2
+                  failures=$((failures + 1))
+                fi
+                ;;
+            esac
+          done
+          if (( failures > 0 )); then
+            echo "::error::$failures regression checks failed" >&2
+            exit 1
+          fi
+      - name: Assert per-bucket SST termination contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "verus-cross-module-sst"
+          expected = {
+              "cross_module_recursive_open_spec_visible": {"A": (1, 0), "B": (1, 0)},
+              "cross_module_recursive_closed_spec_hidden": {"A": (1, 0), "B": (0, 0)},
+              "cross_module_recursive_invalid_decrease_rejected": {"A": (1, 0), "B": (1, 0)},
+              "cross_module_recursive_decreases_by": {"A": (0, 1), "B": (0, 0)},
+              "cross_module_mutual_recursive_decrease": {
+                  "A": (2, 0), "B": (2, 0), "C": (2, 0),
+              },
+          }
+          counts = {
+              f"{test}/{bucket}-sst.vir": values
+              for test, buckets in expected.items()
+              for bucket, values in buckets.items()
+          }
+          paths = {p.relative_to(root).as_posix(): p for p in root.glob("*/*-sst.vir")}
+          if paths.keys() != counts.keys():
+              raise SystemExit(
+                  f"SST inventory mismatch: missing={sorted(counts.keys()-paths.keys())} "
+                  f"extra={sorted(paths.keys()-counts.keys())}"
+              )
+          kinds = (
+              ":kind (PostConditionKind DecreasesImplicitLemma)",
+              ":kind (PostConditionKind DecreasesBy)",
+          )
+          for name, expected_counts in counts.items():
+              content = paths[name].read_text(encoding="utf-8")
+              observed = tuple(content.count(kind) for kind in kinds)
+              if observed != expected_counts:
+                  raise SystemExit(
+                      f"{name}: termination checks {observed}, expected {expected_counts}"
+                  )
+              if name == "cross_module_recursive_closed_spec_hidden/B-sst.vir":
+                  if "FuncSpecBodySst" in content:
+                      raise SystemExit("closed spec body exposed in non-owning bucket")
+              if name == "cross_module_recursive_decreases_by/B-sst.vir":
+                  if ":termination_check None" not in content:
+                      raise SystemExit("explicit decreases_by must be absent in importing bucket")
+          print("SST_TERMINATION_CONTRACT_PASS", len(counts))
+          PY
+      - name: Archive SST evidence for inspection
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cross-module-sst-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/verus-cross-module-sst/
+          if-no-files-found: warn
+          retention-days: 7
