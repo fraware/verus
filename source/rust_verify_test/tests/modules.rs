@@ -406,3 +406,132 @@ test_verify_one_file! {
         pub uninterp open fn bar();
     } => Err(err) => assert_vir_error_msg(err, "expected `fn`")
 }
+// Cross-module recursive spec functions and decreases checks.
+// These tests exercise verification outcomes; SST structure needs separate validation.
+test_verify_one_file! {
+    #[test] cross_module_recursive_open_spec_visible verus_code! {
+        mod A {
+            use verus_builtin::{nat, SpecAdd, SpecSub};
+
+            pub open spec fn count(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { 1 + count((n - 1) as nat) }
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0);
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] cross_module_recursive_closed_spec_hidden verus_code! {
+        mod A {
+            use verus_builtin::{nat, SpecAdd, SpecSub};
+
+            pub closed spec fn count(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { 1 + count((n - 1) as nat) }
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0); // FAILS: sibling cannot unfold a closed spec.
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
+    #[test] cross_module_recursive_invalid_decrease_rejected verus_code! {
+        mod A {
+            use verus_builtin::{nat, SpecAdd, SpecSub};
+
+            pub open spec fn count(n: nat) -> nat
+                decreases n
+            {
+                count(n) // FAILS: recursion does not decrease.
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                let _observed = count(0);
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+// A private decreases_by proof is checked in the defining module.
+test_verify_one_file! {
+    #[test] cross_module_recursive_decreases_by verus_code! {
+        mod A {
+            use verus_builtin::{nat, SpecAdd, SpecSub};
+            use verus_builtin::decreases_by;
+
+            pub open spec fn count(n: nat) -> nat
+                decreases n
+            {
+                decreases_by(check_count);
+                if n == 0 { 0 } else { 1 + count((n - 1) as nat) }
+            }
+
+            #[verifier(decreases_by)]
+            proof fn check_count(n: nat) {
+            }
+        }
+
+        mod B {
+            use crate::A::count;
+
+            proof fn check() {
+                assert(count(0) == 0);
+            }
+        }
+    } => Ok(())
+}
+
+// A recursive SCC spanning two modules must verify in both owning buckets.
+test_verify_one_file! {
+    #[test] cross_module_mutual_recursive_decrease verus_code! {
+        mod A {
+            use verus_builtin::{nat, SpecAdd, SpecSub};
+
+            pub open spec fn even(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { crate::B::odd((n - 1) as nat) }
+            }
+        }
+
+        mod B {
+            use verus_builtin::{nat, SpecAdd, SpecSub};
+
+            pub open spec fn odd(n: nat) -> nat
+                decreases n
+            {
+                if n == 0 { 0 } else { crate::A::even((n - 1) as nat) }
+            }
+        }
+
+        mod C {
+            use crate::A::even;
+
+            proof fn check() {
+                assert(even(0) == 0);
+            }
+        }
+    } => Ok(())
+}
