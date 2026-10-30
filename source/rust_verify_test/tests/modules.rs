@@ -480,6 +480,7 @@ test_verify_one_file! {
     #[test] cross_module_recursive_decreases_by verus_code! {
         mod A {
             use verus_builtin::{nat, SpecAdd, SpecSub};
+            use verus_builtin::decreases_by;
 
             pub open spec fn count(n: nat) -> nat
                 decreases n
