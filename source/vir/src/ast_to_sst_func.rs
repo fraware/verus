@@ -121,6 +121,42 @@ pub(crate) fn params_to_pre_post_pars(params: &Params) -> Pars {
     )
 }
 
+// Explicit decreases_by proofs belong to their owning verification bucket.
+// Non-owning buckets may export the implicit termination check only.
+fn include_termination_check(
+    is_recursive: bool,
+    verifying_owning_bucket: bool,
+    has_explicit_decreases_by: bool,
+) -> bool {
+    is_recursive && (verifying_owning_bucket || !has_explicit_decreases_by)
+}
+
+#[cfg(test)]
+mod termination_export_tests {
+    use super::include_termination_check;
+
+    #[test]
+    fn only_implicit_nonowning_termination_is_exported() {
+        let cases = [
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, true, true, false),
+            (true, false, false, true),
+            (true, false, true, false),
+            (true, true, false, true),
+            (true, true, true, true),
+        ];
+        for (recursive, owning, explicit, expected) in cases {
+            assert_eq!(
+                include_termination_check(recursive, owning, explicit),
+                expected,
+                "recursive={recursive} owning={owning} explicit_decreases_by={explicit}",
+            );
+        }
+    }
+}
+
 fn func_body_to_sst(
     ctx: &Ctx,
     diagnostics: &impl air::messages::Diagnostics,
@@ -216,8 +252,11 @@ fn func_body_to_sst(
     // This leaves func_axioms_to_sst's public_body gate unchanged.
     // Only export implicit termination evidence outside the owning bucket.
     // Explicit decreases_by proofs remain owned and are never exported.
-    let include_termination = verifying_owning_bucket || function.x.decrease_by.is_none();
-    let termination_check = if is_recursive && include_termination {
+    let termination_check = if include_termination_check(
+        is_recursive,
+        verifying_owning_bucket,
+        function.x.decrease_by.is_some(),
+    ) {
         let (mut termination_decls, termination_inits, termination_stm) =
             crate::recursion::check_termination_stm(
                 ctx,
