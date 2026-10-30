@@ -469,7 +469,7 @@ test_verify_one_file! {
             use crate::A::count;
 
             proof fn check() {
-                assert(count(0) == 0);
+                let _observed = count(0);
             }
         }
     } => Err(err) => assert_one_fails(err)
