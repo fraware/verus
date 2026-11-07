@@ -85,6 +85,10 @@ jobs:
                       ["rustc", "--print", "target-libdir"], text=True
                   ).strip()
                   env = os.environ.copy()
+                  z3 = Path("source/z3").absolute()
+                  if not z3.is_file() or not os.access(z3, os.X_OK):
+                      raise SystemExit(f"missing executable Z3 solver at {z3}")
+                  env["VERUS_Z3_PATH"] = str(z3)
                   env["LD_LIBRARY_PATH"] = os.pathsep.join([
                       str(Path("source/target-verus/release/deps").absolute()),
                       libdir,
