@@ -11,7 +11,7 @@ permissions:
 jobs:
   paired-benchmark:
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 40
     env:
       CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: true
       BASE_SHA: dc1b61c7affc1f947ce0724134bec33656ae0da0
@@ -24,8 +24,8 @@ jobs:
       - name: Confirm experimental sources
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "$PATCH_SHA"
-          test "$(git rev-parse HEAD^^)" = "$BASE_SHA"
+          git merge-base --is-ancestor "$PATCH_SHA" HEAD
+          test "$(git rev-parse "${PATCH_SHA}^")" = "$BASE_SHA"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
@@ -79,7 +79,7 @@ jobs:
                   elapsed = root / "elapsed.txt"
                   cmd = [
                       "/usr/bin/time", "-f", "%e %M", "-o", str(elapsed),
-                      "./target-verus/release/rust_verify", str(workload),
+                      "./target-verus/release/rust_verify", "--crate-type", "lib", str(workload),
                   ]
                   libdir = subprocess.check_output(
                       ["rustc", "--print", "target-libdir"], text=True
