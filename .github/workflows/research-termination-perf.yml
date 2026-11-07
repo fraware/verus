@@ -1,0 +1,167 @@
+name: Controlled recursive-spec SST export benchmark
+
+on:
+  push:
+    branches:
+      - research/perf-termination-20261106
+
+permissions:
+  contents: read
+
+jobs:
+  paired-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: true
+      BASE_SHA: dc1b61c7affc1f947ce0724134bec33656ae0da0
+      PATCH_SHA: df2b2576f15337af1239a7d8a8b59636c161ad69
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Confirm experimental sources
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$PATCH_SHA"
+          test "$(git rev-parse HEAD^^)" = "$BASE_SHA"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Generate multi-module workloads and recorder
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/termination-sst-bench
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("/tmp/termination-sst-bench")
+          for owners, consumers in [(4, 2), (16, 4), (32, 8)]:
+              parts = [
+                  "#![allow(unused_imports)]",
+                  "use verus_builtin::*;",
+                  "use verus_builtin_macros::*;",
+                  "use vstd::prelude::*;",
+                  "verus! {",
+              ]
+              for i in range(owners):
+                  parts.append(
+                      f"mod Owner{i} {{\n"
+                      "  use verus_builtin::{nat, SpecAdd, SpecSub};\n"
+                      "  pub open spec fn count(n: nat) -> nat\n"
+                      "      decreases n\n"
+                      "  { if n == 0 { 0 } else { 1 + count((n - 1) as nat) } }\n"
+                      "}\n"
+                  )
+              for j in range(consumers):
+                  assertions = "\n".join(
+                      f"    assert(crate::Owner{i}::count(0) == 0);" for i in range(owners)
+                  )
+                  parts.append(f"mod Consumer{j} {{\n  proof fn check() {{\n{assertions}\n  }}\n}}\n")
+              parts.append("}")
+              (root / f"owners{owners}_consumers{consumers}.rs").write_text(
+                  "\n".join(parts), encoding="utf-8"
+              )
+          PY
+          cat > /tmp/termination-sst-bench/measure.py <<'PY'
+          import json
+          import os
+          import re
+          import statistics
+          import subprocess
+          from pathlib import Path
+
+          root = Path("/tmp/termination-sst-bench")
+          variant = os.environ["BENCH_VARIANT"]
+          results = root / "measurements.jsonl"
+          for workload in sorted(root.glob("owners*.rs")):
+              for trial in range(4):
+                  elapsed = root / "elapsed.txt"
+                  cmd = [
+                      "/usr/bin/time", "-f", "%e %M", "-o", str(elapsed),
+                      "./target-verus/release/rust_verify", str(workload),
+                  ]
+                  libdir = subprocess.check_output(
+                      ["rustc", "--print", "target-libdir"], text=True
+                  ).strip()
+                  env = os.environ.copy()
+                  env["LD_LIBRARY_PATH"] = os.pathsep.join([
+                      str(Path("source/target-verus/release/deps").absolute()),
+                      libdir,
+                      env.get("LD_LIBRARY_PATH", ""),
+                  ])
+                  proc = subprocess.run(
+                      cmd, cwd="source", text=True, capture_output=True, env=env
+                  )
+                  output = proc.stdout + proc.stderr
+                  if proc.returncode != 0 or not re.search(
+                      r"verification results::\s*\d+ verified, 0 errors", output
+                  ):
+                      raise SystemExit(
+                          f"{variant} {workload.name} trial={trial} failed ({proc.returncode})\n"
+                          f"{output[-8000:]}"
+                      )
+                  seconds, rss_kib = elapsed.read_text().split()
+                  record = {
+                      "variant": variant, "workload": workload.stem, "trial": trial,
+                      "elapsed_s": float(seconds), "max_rss_kib": int(rss_kib),
+                  }
+                  print(json.dumps(record), flush=True)
+                  if trial > 0:
+                      with results.open("a", encoding="utf-8") as f:
+                          f.write(json.dumps(record) + "\n")
+          PY
+      - name: Build and measure unmodified upstream
+        env:
+          BENCH_VARIANT: upstream
+        run: |
+          set -euo pipefail
+          git checkout --force --detach "$BASE_SHA"
+          cd source
+          ./tools/get-z3.sh
+          cargo run --release --bin create-manifest -- --rolling --write-to-dir cargo-verus/toolchain-manifests
+          cargo build --release
+          cargo run --release --bin cargo-verus -- build --release --manifest-path vstd/Cargo.toml
+          cd ..
+          python3 /tmp/termination-sst-bench/measure.py
+      - name: Build and measure patched compiler
+        env:
+          BENCH_VARIANT: patched
+        run: |
+          set -euo pipefail
+          git checkout --force --detach "$PATCH_SHA"
+          cd source
+          cargo run --release --bin create-manifest -- --rolling --write-to-dir cargo-verus/toolchain-manifests
+          cargo build --release
+          cargo run --release --bin cargo-verus -- build --release --manifest-path vstd/Cargo.toml
+          cd ..
+          python3 /tmp/termination-sst-bench/measure.py
+      - name: Report controlled comparison
+        run: |
+          python3 - <<'PY'
+          import json
+          import statistics
+          from collections import defaultdict
+          from pathlib import Path
+          path = Path("/tmp/termination-sst-bench/measurements.jsonl")
+          rows = [json.loads(s) for s in path.read_text().splitlines()]
+          by = defaultdict(list)
+          for row in rows:
+              by[(row["workload"], row["variant"])].append(row)
+          for work in sorted({r["workload"] for r in rows}):
+              before = by[(work, "upstream")]
+              after = by[(work, "patched")]
+              assert len(before) == len(after) == 3
+              for metric in ["elapsed_s", "max_rss_kib"]:
+                  b = statistics.median(r[metric] for r in before)
+                  a = statistics.median(r[metric] for r in after)
+                  print(f"{work} {metric}: upstream={b} patched={a} ratio={a/b:.3f}", flush=True)
+          PY
+      - name: Archive benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termination-sst-benchmark
+          path: /tmp/termination-sst-bench/measurements.jsonl
+          if-no-files-found: warn
+          retention-days: 7
